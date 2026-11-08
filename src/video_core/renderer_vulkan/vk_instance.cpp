@@ -324,6 +324,8 @@ bool Instance::CreateDevice() {
     amd_gcn_shader = add_extension(VK_AMD_GCN_SHADER_EXTENSION_NAME);
     amd_shader_trinary_minmax = add_extension(VK_AMD_SHADER_TRINARY_MINMAX_EXTENSION_NAME);
     nv_framebuffer_mixed_samples = add_extension(VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME);
+    nv_coverage_reduction_mode =
+        nv_framebuffer_mixed_samples && add_extension(VK_NV_COVERAGE_REDUCTION_MODE_EXTENSION_NAME);
     amd_mixed_attachment_samples = add_extension(VK_AMD_MIXED_ATTACHMENT_SAMPLES_EXTENSION_NAME);
     shader_atomic_float = add_extension(VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME);
     shader_atomic_float2 = add_extension(VK_EXT_SHADER_ATOMIC_FLOAT_2_EXTENSION_NAME);
@@ -575,10 +577,16 @@ bool Instance::CreateDevice() {
             .transformFeedback = transform_feedback_features.transformFeedback,
             .geometryStreams = transform_feedback_features.geometryStreams,
         },
+        vk::PhysicalDeviceCoverageReductionModeFeaturesNV{
+            .coverageReductionMode = true,
+        },
     };
 
     if (!custom_border_color) {
         device_chain.unlink<vk::PhysicalDeviceCustomBorderColorFeaturesEXT>();
+    }
+    if (!nv_coverage_reduction_mode) {
+        device_chain.unlink<vk::PhysicalDeviceCoverageReductionModeFeaturesNV>();
     }
     if (!dynamic_state_3) {
         device_chain.unlink<vk::PhysicalDeviceExtendedDynamicState3FeaturesEXT>();
