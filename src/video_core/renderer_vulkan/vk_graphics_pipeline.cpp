@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <cstdlib>
 #include <utility>
 #include <boost/container/small_vector.hpp>
 
@@ -397,6 +398,52 @@ GraphicsPipeline::GraphicsPipeline(
     // In practice, we use dynamic state for all of it.
     constexpr vk::PipelineDepthStencilStateCreateInfo depth_stencil_info = {};
 
+    // When the raster sample count is higher than the sample count of a color attachment (mixed
+    // samples), NVIDIA merges the coverage of all raster samples that map to the same attachment
+    // sample by default. Two triangles that share an edge then both cover the pixels along that
+    // edge, so translucent meshes get blended twice there and show their triangulation.
+    // VK_AMD_mixed_attachment_samples (and the console GPU) instead use only the raster sample
+    // that matches the attachment sample, so truncate the coverage to get the same behavior.
+    // This only matters for blended color attachments (covering a pixel twice is harmless
+    // otherwise) and only applies when the raster samples are reduced to fewer color samples.
+    // Pipelines with a depth/stencil sample count mismatch alone (e.g. lens flares testing
+    // against a multisampled depth buffer) must keep the default behavior, otherwise their
+    // depth test results are wrong and they render through geometry.
+    vk::PipelineCoverageReductionStateCreateInfoNV coverage_reduction = {
+        .coverageReductionMode = vk::CoverageReductionModeNV::eTruncate,
+    };
+    if (instance.IsCoverageReductionModeSupported()) {
+        const u32 raster_samples = static_cast<u32>(sdata.multisampling.rasterizationSamples);
+        bool truncate_coverage = false;
+        for (u32 i = 0; i < key.num_color_attachments; ++i) {
+            truncate_coverage |= key.blend_controls[i].enable && key.color_samples[i] != 0 &&
+                                 key.color_samples[i] < raster_samples;
+        }
+        // TEMPORARY debugging aid: set SHADPS4_TRUNCATE_LIMIT=N to only truncate the first N
+        // pipelines that qualify (0 disables it entirely). Used to bisect which pipeline is
+        // responsible for visual issues. Remove once the culprit is identified.
+        static const char* const limit_env = std::getenv("SHADPS4_TRUNCATE_LIMIT");
+        static const long truncate_limit = limit_env ? std::atol(limit_env) : -1;
+        static long truncate_index = 0;
+        if (truncate_coverage) {
+            const long index = truncate_index++;
+            const bool allowed = truncate_limit < 0 || index < truncate_limit;
+            // Copy into plain values: bitfield members cannot be bound to fmt's references
+            const u32 num_colors = key.num_color_attachments;
+            const u32 depth_samples = key.depth_samples;
+            const u32 color0_samples = key.color_samples[0];
+            const u32 blend0 = key.blend_controls[0].enable ? 1 : 0;
+            LOG_INFO(Render_Vulkan,
+                     "Mixed sample pipeline #{} {} (raster={}, depth={}, colors={}, color0={}, "
+                     "blend0={}) {}",
+                     index, debug_str, raster_samples, depth_samples, num_colors, color0_samples,
+                     blend0, allowed ? "truncating" : "skipped");
+            if (allowed) {
+                sdata.multisampling.pNext = &coverage_reduction;
+            }
+        }
+    }
+
     const vk::GraphicsPipelineCreateInfo pipeline_info = {
         .pNext = &pipeline_rendering_ci,
         .stageCount = static_cast<u32>(shader_stages.size()),
@@ -419,6 +466,8 @@ GraphicsPipeline::GraphicsPipeline(
     ASSERT_MSG(pipeline_result == vk::Result::eSuccess, "Failed to create graphics pipeline: {}",
                vk::to_string(pipeline_result));
     pipeline = std::move(pipe);
+    // Do not leave a pointer to a local behind in the (serialized) multisample state
+    sdata.multisampling.pNext = nullptr;
     SetObjectName(device, *pipeline, "Graphics Pipeline {}", debug_str);
 }
 
